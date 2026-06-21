@@ -34,6 +34,7 @@ package idgen
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -154,10 +155,43 @@ func tilNextSecond(epoch, lastTs int64) int64 {
 	return ts
 }
 
+// DefaultRegion is used as the 2-character region prefix when the caller
+// does not supply one.
+const DefaultRegion = "XX"
+
+// RegionLength is the exact length of a region code.
+const RegionLength = 2
+
 // FormatID renders a snowflake id as a fixed 16-digit decimal string. Every
-// id is guaranteed to be < 10^16, so the result is always exactly 16 characters.
+// id is guaranteed to be < 10^16, so the result is always exactly 16
+// characters. Equivalent to FormatIDWithRegion(id, DefaultRegion).
 func FormatID(id int64) string {
 	return fmt.Sprintf("%0*d", idDigitCount, id)
+}
+
+// FormatIDWithRegion produces the final 16-character serial number with a
+// region code prepended to the numeric id. The leftmost two digits of the
+// 16-digit numeric id are replaced by the region code in upper case.
+//
+// The region code must be exactly RegionLength (2) ASCII letters; an empty
+// region falls back to DefaultRegion ("XX").
+func FormatIDWithRegion(id int64, region string) (string, error) {
+	if region == "" {
+		region = DefaultRegion
+	}
+	if len(region) != RegionLength {
+		return "", fmt.Errorf("idgen: region %q must be exactly %d characters", region, RegionLength)
+	}
+	for _, r := range region {
+		if r < 'A' || r > 'Z' {
+			if r < 'a' || r > 'z' {
+				return "", fmt.Errorf("idgen: region %q must contain only letters", region)
+			}
+		}
+	}
+	region = strings.ToUpper(region)
+	numeric := fmt.Sprintf("%0*d", idDigitCount, id)
+	return region + numeric[RegionLength:], nil
 }
 
 // IDDigitCount returns the fixed decimal width of a serial number.

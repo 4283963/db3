@@ -45,6 +45,58 @@ func TestFormatID(t *testing.T) {
 	}
 }
 
+func TestFormatIDWithRegion(t *testing.T) {
+	cases := []struct {
+		id      int64
+		region  string
+		want    string
+		wantErr bool
+	}{
+		// default region (empty → XX)
+		{0, "", "XX00000000000000", false},
+		{12345, "", "XX00000000012345", false},
+
+		// explicit region, lower case → normalised to upper
+		{0, "bj", "BJ00000000000000", false},
+		{12345, "SH", "SH00000000012345", false},
+		{maxID, "GZ", "GZ07199254740991", false},
+
+		// output must always be exactly 16 chars
+		{999, "zz", "ZZ00000000000999", false},
+
+		// errors: wrong length
+		{0, "A", "", true},
+		{0, "ABC", "", true},
+
+		// errors: non-letter characters
+		{0, "12", "", true},
+		{0, "B1", "", true},
+		{0, "A-", "", true},
+		{0, "  ", "", true},
+	}
+
+	for _, c := range cases {
+		got, err := FormatIDWithRegion(c.id, c.region)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("FormatIDWithRegion(%d, %q) expected error, got %q", c.id, c.region, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("FormatIDWithRegion(%d, %q) unexpected error: %v", c.id, c.region, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("FormatIDWithRegion(%d, %q) = %q, want %q", c.id, c.region, got, c.want)
+		}
+		if len(got) != IDDigitCount() {
+			t.Errorf("FormatIDWithRegion(%d, %q) length = %d, want %d",
+				c.id, c.region, len(got), IDDigitCount())
+		}
+	}
+}
+
 func TestNextIDFormatAndRange(t *testing.T) {
 	s, err := NewSnowflake(5, recentEpoch(), 1000)
 	if err != nil {
