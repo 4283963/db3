@@ -1,0 +1,24 @@
+server:
+  port: 8080
+  mode: debug # gin mode: debug | release | test
+
+mysql:
+  # If "dsn" is empty it is built from the fields below.
+  dsn: ""
+  host: 127.0.0.1
+  port: 3306
+  user: root
+  password: ""
+  dbname: db3_idgen
+  charset: utf8mb4
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime_sec: 300
+
+idgen:
+  # Custom epoch. The 35-bit millisecond timestamp is measured from this
+  # instant, which maximises the usable lifetime of a 53-bit snowflake id.
+  epoch: "2026-06-21T00:00:00Z"
+  # Tolerated clock-skew (ms). A larger backward jump returns an error
+  # instead of spinning forever.
+  max_clock_backward_ms: 2000
