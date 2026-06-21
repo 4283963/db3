@@ -9,12 +9,12 @@ import (
 	"time"
 )
 
-// recentEpoch is safely within the snowflake's ~2.18-year window so the
+// recentEpoch is safely within the snowflake's ~17-year window so the
 // tests never overflow regardless of when they run.
 func recentEpoch() time.Time { return time.Now().Add(-24 * time.Hour) }
 
 func TestNewSnowflakeRejectsInvalidWorkerID(t *testing.T) {
-	cases := []int64{-1, maxWorkerID + 1, 1000}
+	cases := []int64{-1, MaxWorkerID + 1, 10000}
 	for _, w := range cases {
 		if _, err := NewSnowflake(w, recentEpoch(), 1000); err == nil {
 			t.Fatalf("expected error for workerID %d", w)
@@ -180,12 +180,13 @@ func TestMultipleWorkersDisjoint(t *testing.T) {
 	}
 }
 
-// TestSequenceExhaustionSpinsToNextMs exercises the path where the sequence
-// overflows within a millisecond: many ids requested back-to-back must still
-// all be unique because the generator spins into the next millisecond.
-func TestSequenceExhaustionSpinsToNextMs(t *testing.T) {
+// TestSequenceExhaustionSpinsToNextSecond exercises the path where the
+// sequence overflows within a second: many ids requested back-to-back must
+// still all be unique because the generator spins into the next second.
+func TestSequenceExhaustionSpinsToNextSecond(t *testing.T) {
 	s, _ := NewSnowflake(1, recentEpoch(), 1000)
-	// Far more than maxSequence (1023) in one burst.
+	// Far more than maxSequence (4095) in one burst so we are guaranteed
+	// to wrap at least once and force a wait into the following second.
 	count := int(maxSequence)*5 + 100
 	seen := make(map[int64]struct{}, count)
 	for i := 0; i < count; i++ {

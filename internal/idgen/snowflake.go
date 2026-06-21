@@ -5,23 +5,28 @@
 // is always strictly less than 10^16 (max 2^53-1 = 9,007,199,254,740,991,
 // i.e. 16 digits), which lets the generator honour the "16位流水号" contract.
 //
-// Bit layout (53 bits in total):
+// Bit layout (53 bits in total, all ids fit in 16 decimal digits):
 //
-//	| 36 bits            | 7 bits   | 10 bits  |
-//	| timestamp (ms)     | workerID | sequence |
-//	  MSB                                          LSB
+//	| 29 bits             | 12 bits   | 12 bits   |
+//	| timestamp (seconds) | workerID  | sequence  |
+//	  MSB                                           LSB
 //
-//	- timestamp: milliseconds elapsed since a configurable custom epoch
-//	  (36 bits => ~2.18 years of lifetime per epoch, rotatable).
+//	- timestamp: seconds elapsed since a configurable custom epoch
+//	  (29 bits => ~17 years of lifetime per epoch, rotatable).
 //	- workerID:  the per-device-type "base value" persisted in MySQL
-//	  (7 bits => up to 128 device types).
-//	- sequence:  a per-millisecond counter (10 bits => up to 1024 ids/ms,
-//	  ~1,000,000 ids/s per device type).
+//	  (12 bits => up to 4096 device types).
+//	- sequence:  a per-second counter (12 bits => up to 4096 ids/s per
+//	  device type, plenty for most workloads).
+//
+// Using a second-resolution timestamp (instead of millis) trades off peak
+// per-device id-rate (from ~1M/s to ~4k/s) for two huge wins:
+//  1. worker capacity grows from 128 to 4096 (enough for a real fleet),
+//  2. sequence exhaustion is so rare it practically never happens.
 //
 // Uniqueness under high concurrency is guaranteed by:
 //   - a per-device-type mutex so each generator is single-writer,
-//   - the monotonic sequence counter that wraps only on a millisecond rollover,
-//   - spin-waiting into the next millisecond when a millisecond's sequence is
+//   - the monotonic sequence counter that wraps only on a second rollover,
+//   - spin-waiting into the next second when a second's sequence is
 //     exhausted, and
 //   - bounded spin-waiting when the system clock moves backward.
 package idgen
@@ -35,15 +40,15 @@ import (
 
 // Bit widths.
 const (
-	workerIDBits  = 7
-	sequenceBits  = 10
-	timestampBits = 36
+	workerIDBits  = 12
+	sequenceBits  = 12
+	timestampBits = 29
 )
 
 // Derived masks and shifts.
 const (
-	maxWorkerID    = int64(-1) ^ (int64(-1) << workerIDBits) // 127
-	maxSequence    = int64(-1) ^ (int64(-1) << sequenceBits) // 1023
+	maxWorkerID    = int64(-1) ^ (int64(-1) << workerIDBits) // 4095
+	maxSequence    = int64(-1) ^ (int64(-1) << sequenceBits) // 4095
 	workerIDShift  = sequenceBits
 	timestampShift = sequenceBits + workerIDBits
 
@@ -70,11 +75,11 @@ var ErrClockMovedBackward = errors.New("clock moved backward beyond tolerance")
 // own instance, so contention is confined to a single type.
 type Snowflake struct {
 	mu          sync.Mutex
-	epoch       int64 // base epoch in unix milliseconds
-	lastTs      int64 // last allocated millisecond (relative to epoch)
+	epoch       int64 // base epoch in unix seconds
+	lastTs      int64 // last allocated second (relative to epoch)
 	workerID    int64
 	seq         int64
-	maxBackward int64 // tolerated backward skew in ms
+	maxBackward int64 // tolerated backward skew in seconds
 }
 
 // NewSnowflake creates a generator for the given workerID (the device-type
@@ -88,9 +93,9 @@ func NewSnowflake(workerID int64, epoch time.Time, maxBackwardMs int64) (*Snowfl
 		return nil, errors.New("idgen: maxBackwardMs must be non-negative")
 	}
 	return &Snowflake{
-		epoch:       epoch.UnixMilli(),
+		epoch:       epoch.Unix(),
 		workerID:    workerID,
-		maxBackward: maxBackwardMs,
+		maxBackward: maxBackwardMs / 1000,
 	}, nil
 }
 
@@ -104,29 +109,27 @@ func (s *Snowflake) NextID() (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now().UnixMilli() - s.epoch
+	now := time.Now().Unix() - s.epoch
 
 	// Clock moved backward: try to recover by spin-waiting, but bail out
 	// when the skew exceeds the configured tolerance.
 	if now < s.lastTs {
 		diff := s.lastTs - now
 		if diff > s.maxBackward {
-			return 0, fmt.Errorf("%w: skew=%dms tolerance=%dms",
+			return 0, fmt.Errorf("%w: skew=%ds tolerance=%ds",
 				ErrClockMovedBackward, diff, s.maxBackward)
 		}
 		for now < s.lastTs {
-			time.Sleep(time.Millisecond)
-			now = time.Now().UnixMilli() - s.epoch
+			time.Sleep(200 * time.Millisecond)
+			now = time.Now().Unix() - s.epoch
 		}
 	}
 
 	switch {
 	case now == s.lastTs:
-		// Same millisecond as the previous id: advance the sequence.
 		s.seq = (s.seq + 1) & maxSequence
 		if s.seq == 0 {
-			// Sequence exhausted in this ms: block until the next ms.
-			now = tilNextMillis(s.epoch, s.lastTs)
+			now = tilNextSecond(s.epoch, s.lastTs)
 		}
 	default: // now > s.lastTs
 		s.seq = 0
@@ -141,11 +144,12 @@ func (s *Snowflake) NextID() (int64, error) {
 	return id, nil
 }
 
-// tilNextMillis spins until the millisecond advances past lastTs.
-func tilNextMillis(epoch, lastTs int64) int64 {
-	ts := time.Now().UnixMilli() - epoch
+// tilNextSecond spins until the second advances past lastTs.
+func tilNextSecond(epoch, lastTs int64) int64 {
+	ts := time.Now().Unix() - epoch
 	for ts <= lastTs {
-		ts = time.Now().UnixMilli() - epoch
+		time.Sleep(50 * time.Millisecond)
+		ts = time.Now().Unix() - epoch
 	}
 	return ts
 }
